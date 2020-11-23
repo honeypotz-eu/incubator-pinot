@@ -140,7 +140,7 @@ public class FilterPlanNode implements PlanNode {
                 filterContext = QueryContextConverterUtils
                     .getFilter(CalciteSqlParser.compileToExpression(((JSONMatchPredicate) predicate).getValue()));
               } catch (SqlParseException e) {
-                throw new RuntimeException("Unable to parse the filter expression for json_match:"+ ((JSONMatchPredicate) predicate).getValue());
+                throw new RuntimeException("Unable to parse the filter expression for json_match:"+ ((JSONMatchPredicate) predicate).getValue(), e);
               }
               return new JSONMatchFilterOperator(lhs.getIdentifier(), filterContext, dataSource.getJSONIndex(),
                   _numDocs);

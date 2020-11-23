@@ -21,20 +21,11 @@ package org.apache.pinot.core.segment.index.readers;
 import com.google.common.base.Preconditions;
 import java.io.Closeable;
 import java.io.IOException;
-import java.util.Arrays;
-import org.apache.calcite.sql.parser.SqlParseException;
-import org.apache.pinot.common.utils.StringUtil;
-import org.apache.pinot.core.operator.blocks.FilterBlock;
-import org.apache.pinot.core.operator.docidsets.BitmapDocIdSet;
-import org.apache.pinot.core.operator.filter.BitmapBasedFilterOperator;
 import org.apache.pinot.core.operator.filter.predicate.PredicateEvaluator;
 import org.apache.pinot.core.operator.filter.predicate.PredicateEvaluatorProvider;
-import org.apache.pinot.core.query.request.context.FilterContext;
 import org.apache.pinot.core.query.request.context.predicate.Predicate;
-import org.apache.pinot.core.query.request.context.utils.QueryContextConverterUtils;
 import org.apache.pinot.core.segment.memory.PinotDataBuffer;
 import org.apache.pinot.spi.data.FieldSpec;
-import org.apache.pinot.sql.parsers.CalciteSqlParser;
 import org.roaringbitmap.buffer.ImmutableRoaringBitmap;
 import org.roaringbitmap.buffer.MutableRoaringBitmap;
 
@@ -80,7 +71,7 @@ public class JSONIndexReader implements Closeable {
     //TODO: REMOVE DEBUG START
     byte[] dictHeaderBytes = new byte[(int) bufferSizeArray[DICT_HEADER_INDEX]];
     pinotDataBuffer.copyTo(bufferStartOffsets[DICT_HEADER_INDEX], dictHeaderBytes);
-    System.out.println("Arrays.toString(dictHeaderBytes) = " + Arrays.toString(dictHeaderBytes));
+    //System.out.println("Arrays.toString(dictHeaderBytes) = " + Arrays.toString(dictHeaderBytes));
     //TODO: REMOVE DEBUG  END
 
     PinotDataBuffer dictionaryBuffer =
@@ -95,8 +86,8 @@ public class JSONIndexReader implements Closeable {
 
     //TODO: REMOVE DEBUG START
     for (int dictId = 0; dictId < dictionary.length(); dictId++) {
-      System.out.println("Key = " + new String(dictionary.getBytes(dictId)));
-      System.out.println("Posting List = " + invertedIndexReader.getDocIds(dictId));
+//      System.out.println("Key = " + new String(dictionary.getBytes(dictId)));
+//      System.out.println("Posting List = " + invertedIndexReader.getDocIds(dictId));
     }
     //TODO: REMOVE DEBUG  END
 
@@ -106,7 +97,7 @@ public class JSONIndexReader implements Closeable {
     flattened2RootDocIdBuffer = pinotDataBuffer.view(flattened2RootDocIdStartOffset, flattened2RootDocIdStartOffset + flattened2RootDocIdBufferSize);
     //TODO: REMOVE DEBUG START
     for (int i = 0; i < numFlattenedDocs; i++) {
-      System.out.println("flattenedDocId: " + i + " rootDodId:" + flattened2RootDocIdBuffer.getInt(i * Integer.BYTES));
+      //System.out.println("flattenedDocId: " + i + " rootDodId:" + flattened2RootDocIdBuffer.getInt(i * Integer.BYTES));
     }
     //TODO: REMOVE DEBUG  END
   }

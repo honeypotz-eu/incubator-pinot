@@ -31,7 +31,6 @@ import java.io.IOException;
 import java.net.URL;
 import java.util.Random;
 import org.apache.commons.io.FileUtils;
-import org.apache.pinot.spi.data.readers.FileFormat;
 import org.apache.pinot.spi.plugin.PluginManager;
 import org.apache.pinot.tools.QuickstartTableRequest;
 
@@ -197,7 +196,7 @@ public class JSONQuickstart {
       throws Exception {
     PluginManager.get().init();
 //    generateFile(new File(
-//        "pinot-tools/src/main/resources/examples/batch/personJson/rawdata/super_data.csv"));
+//        "pinot-tools/src/main/resources/examples/batch/personJson/rawdata/personJson_data.csv"));
 
     new JSONQuickstart().execute();
   }
@@ -215,7 +214,7 @@ public class JSONQuickstart {
 //    csvPrinter.printRecord("person");
     bw.write("person");
     bw.newLine();
-    for (int i = 0; i < 100; i++) {
+    for (int i = 0; i < 1_000_000; i++) {
       ObjectNode person = mapper.createObjectNode();
       person.put("name", "adam-" + i);
       person.put("age", random.nextInt(100));

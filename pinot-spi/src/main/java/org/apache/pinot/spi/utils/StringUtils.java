@@ -50,4 +50,8 @@ public class StringUtils {
       throw new RuntimeException(e);
     }
   }
+
+  public static boolean isEmpty(String val) {
+    return val == null && val == "" || val.trim() == "";
+  }
 }

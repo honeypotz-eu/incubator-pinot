@@ -36,15 +36,12 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.Charset;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Comparator;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.PriorityQueue;
 import java.util.TreeMap;
-import java.util.stream.Collectors;
-import org.apache.commons.io.FileUtils;
 import org.apache.commons.lang3.tuple.ImmutablePair;
 import org.apache.pinot.core.common.BlockDocIdIterator;
 import org.apache.pinot.core.io.util.VarLengthBytesValueReaderWriter;
@@ -59,14 +56,20 @@ import org.apache.pinot.core.segment.index.readers.JSONIndexReader;
 import org.apache.pinot.core.segment.memory.PinotDataBuffer;
 import org.apache.pinot.spi.data.DimensionFieldSpec;
 import org.apache.pinot.spi.data.FieldSpec;
+import org.apache.pinot.spi.utils.JsonUtils;
 import org.apache.pinot.sql.parsers.CalciteSqlParser;
 import org.roaringbitmap.RoaringBitmap;
 import org.roaringbitmap.buffer.MutableRoaringBitmap;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import static org.apache.pinot.core.segment.creator.impl.V1Constants.Indexes.JSON_INDEX_FILE_EXTENSION;
 
 
 public class JSONIndexCreator implements Closeable {
+
+  private static final Logger LOGGER = LoggerFactory.getLogger(JSONIndexCreator.class);
+
 
   //separator used to join the key and value to create posting list key
   public static String POSTING_LIST_KEY_SEPARATOR = "|";
@@ -83,7 +86,6 @@ public class JSONIndexCreator implements Closeable {
 
   private int docId = 0;
   private int numFlatennedDocId = 0;
-  int chunkId = 0;
 
   private DataOutputStream postingListWriter;
   private DataOutputStream flattenedDocId2RootDocIdWriter;
@@ -92,12 +94,10 @@ public class JSONIndexCreator implements Closeable {
   List<Integer> flattenedDocIdList = new ArrayList<>();
   List<Integer> postingListChunkOffsets = new ArrayList<>();
   List<Integer> chunkLengths = new ArrayList<>();
-  private FieldSpec fieldSpec;
 
   public JSONIndexCreator(File indexDir, FieldSpec fieldSpec)
       throws IOException {
-    this.fieldSpec = fieldSpec;
-    System.out.println("indexDir = " + indexDir);
+    //System.out.println("indexDir = " + indexDir);
 
     String name = fieldSpec.getName();
     postingListFile = new File(indexDir + name + "_postingList.buf");
@@ -120,34 +120,10 @@ public class JSONIndexCreator implements Closeable {
   public void add(byte[] data)
       throws IOException {
 
-    JsonNode jsonNode = new ObjectMapper().readTree(data);
-    List<Map<String, String>> flattenedMapList = unnestJson(jsonNode);
-    for (Map<String, String> map : flattenedMapList) {
-      //
-      for (Map.Entry<String, String> entry : map.entrySet()) {
-        //handle key posting list
-        String key = entry.getKey();
-
-        List<Integer> keyPostingList = postingListMap.get(key);
-        if (keyPostingList == null) {
-          keyPostingList = new ArrayList<>();
-          postingListMap.put(key, keyPostingList);
-        }
-        keyPostingList.add(numFlatennedDocId);
-
-        //handle keyvalue posting list
-        String keyValue = key + POSTING_LIST_KEY_SEPARATOR + entry.getValue();
-        List<Integer> keyValuePostingList = postingListMap.get(keyValue);
-        if (keyValuePostingList == null) {
-          keyValuePostingList = new ArrayList<>();
-          postingListMap.put(keyValue, keyValuePostingList);
-        }
-        keyValuePostingList.add(numFlatennedDocId);
-      }
-      //flattenedDocId2RootDocIdMapping
-      flattenedDocIdList.add(docId);
-
-      numFlatennedDocId++;
+    JsonNode jsonNode = JsonUtils.bytesToJsonNode(data);
+    JsonNode flattened = JsonUtils.unnestJson(jsonNode);
+    for (JsonNode obj : flattened) {
+      addFlattenedRecord(obj);
     }
     docId++;
 
@@ -157,45 +133,50 @@ public class JSONIndexCreator implements Closeable {
     }
   }
 
+  private void addFlattenedRecord(JsonNode obj) {
+    Iterator<Map.Entry<String, JsonNode>> fields = obj.fields();
+    while (fields.hasNext()) {
+      Map.Entry<String, JsonNode> field = fields.next();
+      //handle key posting list, useful for checking if key exists in the json
+      String key = field.getKey();
+      List<Integer> keyPostingList = postingListMap.get(key);
+      if (keyPostingList == null) {
+        keyPostingList = new ArrayList<>();
+        postingListMap.put(key, keyPostingList);
+      }
+      keyPostingList.add(numFlatennedDocId);
+
+      //handle keyvalue posting list
+      String keyValue = key + POSTING_LIST_KEY_SEPARATOR + field.getValue().asText();
+      List<Integer> keyValuePostingList = postingListMap.get(keyValue);
+      if (keyValuePostingList == null) {
+        keyValuePostingList = new ArrayList<>();
+        postingListMap.put(keyValue, keyValuePostingList);
+      }
+      keyValuePostingList.add(numFlatennedDocId);
+    }
+    //flattenedDocId2RootDocIdMapping
+    flattenedDocIdList.add(docId);
+
+    numFlatennedDocId++;
+  }
+
   /**
    * Multi value
-   * @param dataArray
-   * @param length
-   * @throws IOException
+   * @param dataArray byte[][] representing multiple json strings
+   * @param length length of the array, helpful if the caller is reusing the dataArray across multiple calls
+   * @throws IOException on parsing error
    */
   public void add(byte[][] dataArray, int length)
       throws IOException {
 
     for (int i = 0; i < length; i++) {
       byte[] data = dataArray[i];
-      JsonNode jsonNode = new ObjectMapper().readTree(data);
-      List<Map<String, String>> flattenedMapList = unnestJson(jsonNode);
-      for (Map<String, String> map : flattenedMapList) {
-        //
-        for (Map.Entry<String, String> entry : map.entrySet()) {
-          //handle key posting list
-          String key = entry.getKey();
+      JsonNode jsonNode = JsonUtils.bytesToJsonNode(data);
+      JsonNode flattened = JsonUtils.unnestJson(jsonNode);
 
-          List<Integer> keyPostingList = postingListMap.get(key);
-          if (keyPostingList == null) {
-            keyPostingList = new ArrayList<>();
-            postingListMap.put(key, keyPostingList);
-          }
-          keyPostingList.add(numFlatennedDocId);
-
-          //handle keyvalue posting list
-          String keyValue = key + POSTING_LIST_KEY_SEPARATOR + entry.getValue();
-          List<Integer> keyValuePostingList = postingListMap.get(keyValue);
-          if (keyValuePostingList == null) {
-            keyValuePostingList = new ArrayList<>();
-            postingListMap.put(keyValue, keyValuePostingList);
-          }
-          keyValuePostingList.add(numFlatennedDocId);
-        }
-        //flattenedDocId2RootDocIdMapping
-        flattenedDocIdList.add(numFlatennedDocId);
-
-        numFlatennedDocId++;
+      for (JsonNode obj : flattened) {
+        addFlattenedRecord(obj);
       }
     }
     docId++;
@@ -215,11 +196,11 @@ public class JSONIndexCreator implements Closeable {
     postingListWriter.close();
 
     //key posting list merging
-    System.out.println("InvertedIndex");
-    System.out.println("=================");
+    //System.out.println("InvertedIndex");
+    //System.out.println("=================");
 
     int maxKeyLength = createInvertedIndex(postingListFile, postingListChunkOffsets, chunkLengths);
-    System.out.println("=================");
+    //System.out.println("=================");
 
     int flattenedDocid = 0;
     DataInputStream flattenedDocId2RootDocIdReader =
@@ -228,8 +209,8 @@ public class JSONIndexCreator implements Closeable {
     while (flattenedDocid < numFlatennedDocId) {
       rootDocIdArray[flattenedDocid++] = flattenedDocId2RootDocIdReader.readInt();
     }
-    System.out.println("FlattenedDocId  to RootDocId Mapping = ");
-    System.out.println(Arrays.toString(rootDocIdArray));
+    //System.out.println("FlattenedDocId  to RootDocId Mapping = ");
+    //System.out.println(Arrays.toString(rootDocIdArray));
 
     //PUT all contents into one file
 
@@ -357,7 +338,7 @@ public class JSONIndexCreator implements Closeable {
       ImmutablePair<Integer, ImmutablePair<byte[], int[]>> poll = queue.poll();
       byte[] currKey = poll.getRight().getLeft();
       if (prevKey != null && byteArrayComparator.compare(prevKey, currKey) != 0) {
-        System.out.println(new String(prevKey) + ":" + roaringBitmap);
+        //System.out.println(new String(prevKey) + ":" + roaringBitmap);
         writer.add(prevKey, roaringBitmap);
         roaringBitmap.clear();
       }
@@ -382,7 +363,7 @@ public class JSONIndexCreator implements Closeable {
   private void flush()
       throws IOException {
     //write the key (length|actual bytes) - posting list(length, flattenedDocIds)
-    System.out.println("postingListMap = " + postingListMap);
+    //System.out.println("postingListMap = " + postingListMap);
     for (Map.Entry<String, List<Integer>> entry : postingListMap.entrySet()) {
       byte[] keyBytes = entry.getKey().getBytes(Charset.forName("UTF-8"));
       postingListWriter.writeInt(keyBytes.length);
@@ -404,60 +385,6 @@ public class JSONIndexCreator implements Closeable {
     flattenedDocIdList.clear();
   }
 
-  private static List<Map<String, String>> unnestJson(JsonNode root) {
-    Iterator<Map.Entry<String, JsonNode>> fields = root.fields();
-    Map<String, String> flattenedSingleValuesMap = new TreeMap<>();
-    Map<String, JsonNode> arrNodes = new TreeMap<>();
-    Map<String, JsonNode> objectNodes = new TreeMap<>();
-    List<Map<String, String>> resultList = new ArrayList<>();
-    List<Map<String, String>> tempResultList = new ArrayList<>();
-    while (fields.hasNext()) {
-      Map.Entry<String, JsonNode> child = fields.next();
-      if (child.getValue().isValueNode()) {
-        //Normal value node
-        flattenedSingleValuesMap.put(child.getKey(), child.getValue().asText());
-      } else if (child.getValue().isArray()) {
-        //Array Node: Process these nodes later
-        arrNodes.put(child.getKey(), child.getValue());
-      } else {
-        //Object Node
-        objectNodes.put(child.getKey(), child.getValue());
-      }
-    }
-    for (String objectNodeKey : objectNodes.keySet()) {
-      JsonNode objectNode = objectNodes.get(objectNodeKey);
-      modifyKeysInMap(flattenedSingleValuesMap, tempResultList, objectNodeKey, objectNode);
-    }
-    if (tempResultList.isEmpty()) {
-      tempResultList.add(flattenedSingleValuesMap);
-    }
-    if (!arrNodes.isEmpty()) {
-      for (Map<String, String> flattenedMapElement : tempResultList) {
-        for (String arrNodeKey : arrNodes.keySet()) {
-          JsonNode arrNode = arrNodes.get(arrNodeKey);
-          for (JsonNode arrNodeElement : arrNode) {
-            modifyKeysInMap(flattenedMapElement, resultList, arrNodeKey, arrNodeElement);
-          }
-        }
-      }
-    } else {
-      resultList.addAll(tempResultList);
-    }
-    return resultList;
-  }
-
-  private static void modifyKeysInMap(Map<String, String> flattenedMap, List<Map<String, String>> resultList,
-      String arrNodeKey, JsonNode arrNode) {
-    List<Map<String, String>> objectResult = unnestJson(arrNode);
-    for (Map<String, String> flattenedObject : objectResult) {
-      Map<String, String> flattenedObjectCopy = new TreeMap<>(flattenedMap);
-      for (Map.Entry<String, String> entry : flattenedObject.entrySet()) {
-        flattenedObjectCopy.put(arrNodeKey + "." + entry.getKey(), entry.getValue());
-      }
-      resultList.add(flattenedObjectCopy);
-    }
-  }
-
   @Override
   public void close()
       throws IOException {
@@ -470,7 +397,6 @@ public class JSONIndexCreator implements Closeable {
     private File _dictionaryOffsetFile;
     private DataOutputStream _dictionaryWriter;
     private DataOutputStream _invertedIndexOffsetWriter;
-    private File _invertedIndexOffsetFile;
     private DataOutputStream _invertedIndexWriter;
     private int _dictId;
     private int _dictOffset;
@@ -489,7 +415,6 @@ public class JSONIndexCreator implements Closeable {
       _dictionaryWriter = new DataOutputStream(new BufferedOutputStream(new FileOutputStream(dictionaryFile)));
       _invertedIndexOffsetWriter =
           new DataOutputStream(new BufferedOutputStream(new FileOutputStream(invertedIndexOffsetFile)));
-      _invertedIndexOffsetFile = invertedIndexOffsetFile;
       _invertedIndexWriter = new DataOutputStream(new BufferedOutputStream(new FileOutputStream(invertedIndexFile)));
       _dictId = 0;
       _dictOffset = 0;
@@ -513,9 +438,9 @@ public class JSONIndexCreator implements Closeable {
       ByteBuffer serializedRoaringBitmapBuffer = ByteBuffer.wrap(serializedRoaringBitmap);
       roaringBitmap.serialize(serializedRoaringBitmapBuffer);
       _invertedIndexWriter.write(serializedRoaringBitmap);
-      System.out.println(
-          "dictId = " + _dictId + ", dict offset:" + _dictOffset + ", valueLength:" + key.length + ", inv offset:"
-              + _invertedIndexOffset + ", serializedSizeInBytes:" + serializedSizeInBytes);
+      //System.out.println(
+//          "dictId = " + _dictId + ", dict offset:" + _dictOffset + ", valueLength:" + key.length + ", inv offset:"
+//              + _invertedIndexOffset + ", serializedSizeInBytes:" + serializedSizeInBytes);
 
       //increment offsets
       _dictOffset = _dictOffset + key.length;
@@ -532,7 +457,7 @@ public class JSONIndexCreator implements Closeable {
 
       byte[] headerBytes = VarLengthBytesValueReaderWriter.getHeaderBytes(_dictId);
       _dictionaryHeaderWriter.write(headerBytes);
-      System.out.println("headerBytes = " + Arrays.toString(headerBytes));
+      //System.out.println("headerBytes = " + Arrays.toString(headerBytes));
 
       _dictionaryHeaderWriter.close();
       _dictionaryOffsetWriter.close();
@@ -549,7 +474,7 @@ public class JSONIndexCreator implements Closeable {
         int offset = dictionaryOffsetBuffer.getInt(i * Integer.BYTES);
         int newOffset = offset + dictOffsetBase;
         dictionaryOffsetBuffer.putInt(i * Integer.BYTES, offset + dictOffsetBase);
-        System.out.println("dictId = " + i + ", offset = " + offset + ", newOffset = " + newOffset);
+        //System.out.println("dictId = " + i + ", offset = " + offset + ", newOffset = " + newOffset);
       }
 
       PinotDataBuffer invIndexOffsetBuffer = PinotDataBuffer
@@ -559,7 +484,7 @@ public class JSONIndexCreator implements Closeable {
       for (int i = 0; i < _dictId + 1; i++) {
         int offset = invIndexOffsetBuffer.getInt(i * Integer.BYTES);
         int newOffset = offset + invIndexOffsetBase;
-        System.out.println("offset = " + offset + ", newOffset = " + newOffset);
+        //System.out.println("offset = " + offset + ", newOffset = " + newOffset);
 
         invIndexOffsetBuffer.putInt(i * Integer.BYTES, newOffset);
       }
@@ -607,51 +532,51 @@ public class JSONIndexCreator implements Closeable {
         + "                 ] \n" + "} ";
 
     String json = json3;
-    System.out.println("json = " + json);
+    //System.out.println("json = " + json);
     JsonNode rawJsonNode = new ObjectMapper().readTree(json);
 
     System.out.println(
         "rawJsonNode = " + new ObjectMapper().writerWithDefaultPrettyPrinter().writeValueAsString(rawJsonNode));
     String flattenJson = JsonFlattener.flatten(json);
 
-    System.out.println("flattenJson = " + flattenJson);
+    //System.out.println("flattenJson = " + flattenJson);
     JsonNode jsonNode = new ObjectMapper().readTree(flattenJson);
 
     System.out
         .println("jsonNode = " + new ObjectMapper().writerWithDefaultPrettyPrinter().writeValueAsString(jsonNode));
     Map<String, Object> stringObjectMap = JsonFlattener.flattenAsMap(json);
-    System.out.println("JsonFlattener.flattenAsMap(json) = " + stringObjectMap);
+    //System.out.println("JsonFlattener.flattenAsMap(json) = " + stringObjectMap);
     FieldSpec fieldSpec = new DimensionFieldSpec();
     fieldSpec.setName("person");
     File tempDir = Files.createTempDir();
     JSONIndexCreator creator = new JSONIndexCreator(tempDir, fieldSpec);
-    List<Map<String, String>> maps = creator.unnestJson(rawJsonNode);
-    System.out.println("maps = " + maps.toString().replaceAll("},", "}\n"));
+    JsonNode unnestJson = JsonUtils.unnestJson(rawJsonNode);
+    System.out.println("unnestJson = " + unnestJson);
     creator.add(json.getBytes());
 
     creator.seal();
-    System.out.println("Output Dir = " + tempDir);
-    System.out.println("FileUtils.listFiles(tempDir, null, true) = " + FileUtils.listFiles(tempDir, null, true).stream()
-        .map(file -> file.getName()).collect(Collectors.toList()));
+    //System.out.println("Output Dir = " + tempDir);
+    //System.out.println("FileUtils.listFiles(tempDir, null, true) = " + FileUtils.listFiles(tempDir, null, true).stream()
+//        .map(file -> file.getName()).collect(Collectors.toList()));
 
     //Test reader
     PinotDataBuffer buffer =
         PinotDataBuffer.mapReadOnlyBigEndianFile(new File(tempDir, fieldSpec.getName() + ".json.idx"));
     JSONIndexReader reader = new JSONIndexReader(buffer);
     ExpressionContext lhs = ExpressionContext.forIdentifier("person");
-    Predicate predicate = new EqPredicate(lhs, "addresses.street" + POSTING_LIST_KEY_SEPARATOR + "third st");
+    Predicate predicate = new EqPredicate(lhs, "addresses.$index" + POSTING_LIST_KEY_SEPARATOR + "0");
     MutableRoaringBitmap matchingDocIds = reader.getMatchingDocIds(predicate);
     System.out.println("matchingDocIds = " + matchingDocIds);
 
     //Test filter operator
     FilterContext filterContext = QueryContextConverterUtils
-        .getFilter(CalciteSqlParser.compileToExpression("name='adam' AND addresses.street='main st'"));
+        .getFilter(CalciteSqlParser.compileToExpression("name='adam' AND addresses.street='second st' AND addresses.array_index=1"));
     int numDocs = 1;
     JSONMatchFilterOperator operator = new JSONMatchFilterOperator("person", filterContext, reader, numDocs);
     FilterBlock filterBlock = operator.nextBlock();
     BlockDocIdIterator iterator = filterBlock.getBlockDocIdSet().iterator();
     int docId = -1;
-    while ((docId = iterator.next()) > 0) {
+    while ((docId = iterator.next()) > -1) {
       System.out.println("docId = " + docId);
     }
   }

@@ -33,7 +33,9 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 import javax.annotation.Nullable;
 import org.apache.pinot.spi.data.FieldSpec;
 import org.apache.pinot.spi.data.FieldSpec.DataType;
@@ -71,8 +73,8 @@ public class JsonUtils {
 
   public static <T> List<T> fileToList(File jsonFile, Class<T> valueType)
       throws IOException {
-    return DEFAULT_READER.forType(
-            DEFAULT_MAPPER.getTypeFactory().constructCollectionType(List.class, valueType)).readValue(jsonFile);
+    return DEFAULT_READER.forType(DEFAULT_MAPPER.getTypeFactory().constructCollectionType(List.class, valueType))
+        .readValue(jsonFile);
   }
 
   public static JsonNode fileToJsonNode(File jsonFile)
@@ -189,6 +191,104 @@ public class JsonUtils {
         }
       default:
         throw new IllegalArgumentException(String.format("Unsupported data type %s", dataType));
+    }
+  }
+
+  public static JsonNode unnestJson(JsonNode root) {
+    Iterator<Map.Entry<String, JsonNode>> fields = root.fields();
+    ObjectNode flattenedJsonNode = DEFAULT_MAPPER.createObjectNode();
+    ObjectNode nodesWithArrayValues = DEFAULT_MAPPER.createObjectNode();
+    ObjectNode nodesWithObjectValues = DEFAULT_MAPPER.createObjectNode();
+    ArrayNode intermediateResultJsonNode = DEFAULT_MAPPER.createArrayNode();
+    ArrayNode resultJsonNode = DEFAULT_MAPPER.createArrayNode();
+    if (root.isValueNode()) {
+      ObjectNode keyValueNode = DEFAULT_MAPPER.createObjectNode();
+      keyValueNode.put("", root);
+      return keyValueNode;
+    }
+    if (root.isArray()) {
+      for (JsonNode jsonNode : root) {
+        JsonNode flattenedNode = unnestJson(jsonNode);
+        resultJsonNode.add(flattenedNode);
+      }
+      return resultJsonNode;
+    }
+    while (fields.hasNext()) {
+      Map.Entry<String, JsonNode> child = fields.next();
+      if (child.getValue().isValueNode()) {
+        //Normal value node
+        flattenedJsonNode.put(child.getKey(), child.getValue());
+      } else if (child.getValue().isArray()) {
+        //Array Node: Process these nodes later
+        boolean isSingleValuedArray = false;
+        for (JsonNode jsonNode : child.getValue()) {
+          if (jsonNode.isValueNode()) {
+            isSingleValuedArray = true;
+            break;
+          }
+        }
+        if (!isSingleValuedArray) {
+          nodesWithArrayValues.put(child.getKey(), child.getValue());
+        } else {
+          flattenedJsonNode.put(child.getKey(), child.getValue());
+        }
+      } else {
+        //Object Node
+        nodesWithObjectValues.put(child.getKey(), child.getValue());
+      }
+    }
+    Iterator<String> objectFields = nodesWithObjectValues.fieldNames();
+    while (objectFields.hasNext()) {
+      String objectNodeKey = objectFields.next();
+      JsonNode objectNode = nodesWithObjectValues.get(objectNodeKey);
+      modifyKeysInObject(flattenedJsonNode, intermediateResultJsonNode, objectNodeKey, objectNode, -1);
+    }
+    if (intermediateResultJsonNode.size() == 0) {
+      intermediateResultJsonNode.add(flattenedJsonNode);
+    }
+    if (nodesWithArrayValues.size() > 0) {
+      if (intermediateResultJsonNode.size() > 0) {
+        for (JsonNode flattenedMapElement : intermediateResultJsonNode) {
+          modifyKeysInArray(nodesWithArrayValues, resultJsonNode, flattenedMapElement);
+        }
+      } else {
+        modifyKeysInArray(nodesWithArrayValues, resultJsonNode, DEFAULT_MAPPER.createObjectNode());
+      }
+    } else {
+      resultJsonNode.addAll(intermediateResultJsonNode);
+    }
+    return resultJsonNode;
+  }
+  private static void modifyKeysInArray(ObjectNode nodesWithArrayValues, ArrayNode resultJsonNode,
+      JsonNode arrayElement) {
+    Iterator<String> arrayFields = nodesWithArrayValues.fieldNames();
+    while (arrayFields.hasNext()) {
+      String arrNodeKey = arrayFields.next();
+      JsonNode arrNode = nodesWithArrayValues.get(arrNodeKey);
+      int i = 0;
+      for (JsonNode arrNodeElement : arrNode) {
+        modifyKeysInObject(arrayElement, resultJsonNode, arrNodeKey, arrNodeElement, i);
+        i++;
+      }
+    }
+  }
+  private static void modifyKeysInObject(JsonNode flattenedMap, ArrayNode resultList, String arrNodeKey,
+      JsonNode arrNode, int offset) {
+    JsonNode objectResult = unnestJson(arrNode);
+    if (objectResult.size() > 0) {
+      for (JsonNode flattenedObject : objectResult) {
+        ObjectNode flattenedObjectCopy = flattenedMap.deepCopy();
+        Iterator<Map.Entry<String, JsonNode>> fields = flattenedObject.fields();
+        while (fields.hasNext()) {
+          Map.Entry<String, JsonNode> entry = fields.next();
+          String newKey = StringUtils.isEmpty(entry.getKey()) ? arrNodeKey : (arrNodeKey + "." + entry.getKey());
+          flattenedObjectCopy.put(newKey, entry.getValue());
+        }
+        if(offset != -1){
+          flattenedObjectCopy.put(arrNodeKey+".$index", offset);
+        }
+        resultList.add(flattenedObjectCopy);
+      }
     }
   }
 }
